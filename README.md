@@ -1,66 +1,35 @@
-## Foundry
+# Kuru - A Fully onchain CLOB with backstop liquidity features. This combines the best of TradFi and DeFi together in order to trade both long-tail and short-tail assets seamlessly.
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## Scope
 
-Foundry consists of:
+All contracts in the `contracts/` directory including file sin the subdirectories. except [BitMath.sol](contracts/libraries/BitMath.sol) and [KuruUtils.sol](contracts/periphery/KuruUtils.sol).
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## Architecture
 
-## Documentation
+The [Kuru Router](contracts/Router.sol) governs all the markets - it is the default owner of all markets and can be used to upgrade markets to a new implementation. It also stores market params for every market and hence can be easily used to route through markets. The [Kuru Margin Account](contracts/MarginAccount.sol) takes care of all accounting related to limit orders and backstop liquidity AMMs.
 
-https://book.getfoundry.sh/
+Each market on Kuru comprises of an OrderBook and discretised AMM liquidity. Simply said, you can discretise a CPAMM and transform it into an OrderBook if you calculate the amount of tokens which have to flow in or out between two price points. The OrderBook contract treats the AMM liquidity as a first-class citizen, so it can aggregate between limit orders on the book and the AMM liquidity while maintaining price priority.
 
-## Usage
+All limit orders on Kuru maintain price-time priority, i.e, incoming orders match on the best price available, with first-in-first-out fill priority. The prices are stored in a bitmap-based [tree](contracts/libraries/TreeMath.sol) which allows us to fetch best price at o(1) complexity. All orders for a specific price point are stored in a double-linked-list, and therefore order matching is at o(n) complexity.
 
-### Build
+Markets on kuru need to be initialized with a given set of parameters which suit the base/quote pair. You will find recommendations on how to set these in the same repo. If you are going YOLO, please note that a low `sizePrecision` will wreck the backstop little and wrong `pricePrecision` might make it impossible to place limit orders on certain pairs.
 
-```shell
-$ forge build
-```
+Since matching is done fully onchain, taker orders essentially `crank` maker orders and credit the outputs to the makers. Hence, to avoid potential DOS, we use the margin account for all debits and credits related to limit orders. However, taker orders can choose which path they want to take.
 
-### Test
+## Known Issues
 
-```shell
-$ forge test
-```
+### Accumulated rounding loss on fragmented flip order fills
 
-### Format
+This is a potential DOS vector only if the price and size precisions are unfavourably set. In a well configured market, the cost of DOS will be well above the damage caused to makers, and hence, is not economically viable.
 
-```shell
-$ forge fmt
-```
+### Out of order execution user request on KuruForwarder
 
-### Gas Snapshots
+The Kuru Forwarder contract allows users to pass requests which do not steadily increase by 1, i.e users do not have to pass requests with nonces as 1,2,3...n. Instead, it allows any request as long as the request nonce is equal to or larger than the stored user nonce. This is intentional, as now makers can submit transactions without being nonce-aware by just setting the nonce as the current timestamp.
 
-```shell
-$ forge snapshot
-```
+### A market can be DOSed if a user spams it with large number of orders
 
-### Anvil
+This is only feasible if the `minSize` of the market is set very low. A well-configured market should have a large enough `minSize` such that the market cannot be DOSed.
 
-```shell
-$ anvil
-```
+### Vault can leak value to arbitrage due to deposit rebalancing
 
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+Since we do not reinvest fees generated from the backstop liquidity vault back into the pool like normal CPAMMs do, the vault can be imbalanced at times. Due to this, actors performing arbitrage can execute a zero-slippage swap by doing a deposit and withdraw. However, since this just makes the vault rebalance, we do not consider this an issue to the protocol.
